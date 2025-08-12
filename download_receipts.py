@@ -530,33 +530,26 @@ def main():
     print(f"Target period: {settled_from} → {settled_to}")
 
     # Setup storage (Google Drive or local)
+    # Always organize files by month, regardless of the flag used
     if USE_GOOGLE_DRIVE:
         # Initialize Google Drive service
         drive_service = get_drive_service()
-        # Create or get the period folder in Google Drive (only for monthly mode)
+        # Use parent folder directly, files will be organized by month
+        period_folder_id = GOOGLE_DRIVE_FOLDER_ID
         if args.days:
-            # "Last days" mode: no subfolder, everything in parent folder
-            period_folder_id = GOOGLE_DRIVE_FOLDER_ID
             storage_location = f"Google Drive root folder (last {args.days} days)"
         else:
-            # Monthly mode: create subfolder
-            period_folder_id = get_or_create_folder(
-                drive_service, period_name, GOOGLE_DRIVE_FOLDER_ID
-            )
-            storage_location = f"Google Drive folder: {period_name}"
+            storage_location = f"Google Drive root folder ({year}-{month:02d})"
     else:
-        # Use local storage
+        # Use local storage with single root folder
         drive_service = None
-        if args.days:
-            # "Last days" mode: single folder
-            local_output_dir = "receipts_sync"
-            period_folder_id = None
-        else:
-            # Monthly mode: folder per month
-            local_output_dir = period_name
-            period_folder_id = None
+        local_output_dir = "receipts_sync"
+        period_folder_id = None
         os.makedirs(local_output_dir, exist_ok=True)
-        storage_location = f"Local directory: {local_output_dir}"
+        if args.days:
+            storage_location = f"Local directory: {local_output_dir} (last {args.days} days)"
+        else:
+            storage_location = f"Local directory: {local_output_dir} ({year}-{month:02d})"
 
     headers = {"Authorization": f"{LOGIN}:{SECRET}"}
 
@@ -588,10 +581,10 @@ def main():
 
     print(f"Transactions found with attachments: {len(transactions)}")
 
-    # Load previous download state
+    # Load previous download state (always at root level)
     if USE_GOOGLE_DRIVE:
-        # In "last days" mode, state is at the root of parent folder
-        state_folder_id = period_folder_id
+        # State is always at the root of parent folder
+        state_folder_id = GOOGLE_DRIVE_FOLDER_ID
         download_state = load_download_state(drive_service, state_folder_id)
     else:
         state_file_path = os.path.join(local_output_dir, ".download_state.json")
@@ -623,36 +616,22 @@ def main():
                 )
                 file_data = requests.get(url).content
 
-                # Determine destination folder by month
-                if args.days:
-                    # "Last days" mode: organize by month
-                    month_folder = get_month_folder_name(tx.get("settled_at", ""))
-                    if USE_GOOGLE_DRIVE:
-                        # Create month folder in Google Drive
-                        month_folder_id = get_or_create_folder(
-                            drive_service, month_folder, GOOGLE_DRIVE_FOLDER_ID
-                        )
-                        upload_file_to_drive(
-                            drive_service, file_data, enriched_filename, month_folder_id
-                        )
-                    else:
-                        # Create month folder locally
-                        month_dir = os.path.join("receipts_sync", month_folder)
-                        os.makedirs(month_dir, exist_ok=True)
-                        file_path = os.path.join(month_dir, enriched_filename)
-                        upload_file_local(file_data, file_path)
+                # Always organize by month, regardless of the flag used
+                month_folder = get_month_folder_name(tx.get("settled_at", ""))
+                if USE_GOOGLE_DRIVE:
+                    # Create month folder in Google Drive
+                    month_folder_id = get_or_create_folder(
+                        drive_service, month_folder, GOOGLE_DRIVE_FOLDER_ID
+                    )
+                    upload_file_to_drive(
+                        drive_service, file_data, enriched_filename, month_folder_id
+                    )
                 else:
-                    # Monthly mode: use period folder
-                    if USE_GOOGLE_DRIVE:
-                        upload_file_to_drive(
-                            drive_service,
-                            file_data,
-                            enriched_filename,
-                            period_folder_id,
-                        )
-                    else:
-                        file_path = os.path.join(local_output_dir, enriched_filename)
-                        upload_file_local(file_data, file_path)
+                    # Create month folder locally
+                    month_dir = os.path.join("receipts_sync", month_folder)
+                    os.makedirs(month_dir, exist_ok=True)
+                    file_path = os.path.join(month_dir, enriched_filename)
+                    upload_file_local(file_data, file_path)
                 update_attachment_state(att, enriched_filename, download_state)
                 downloaded_count += 1
             elif should_rename_file(att, enriched_filename, download_state):
@@ -660,38 +639,23 @@ def main():
                 stored = download_state[att["id"]]
                 old_filename = stored.get("enriched_file_name", "")
 
-                # Determine folder for renaming
-                if args.days:
-                    month_folder = get_month_folder_name(tx.get("settled_at", ""))
-                    if USE_GOOGLE_DRIVE:
-                        month_folder_id = get_or_create_folder(
-                            drive_service, month_folder, GOOGLE_DRIVE_FOLDER_ID
-                        )
-                        renamed = rename_file_in_drive(
-                            drive_service,
-                            old_filename,
-                            enriched_filename,
-                            month_folder_id,
-                        )
-                    else:
-                        month_dir = os.path.join("receipts_sync", month_folder)
-                        old_file_path = os.path.join(month_dir, old_filename)
-                        new_file_path = os.path.join(month_dir, enriched_filename)
-                        renamed = rename_file_local(old_file_path, new_file_path)
+                # Always organize by month for renaming too
+                month_folder = get_month_folder_name(tx.get("settled_at", ""))
+                if USE_GOOGLE_DRIVE:
+                    month_folder_id = get_or_create_folder(
+                        drive_service, month_folder, GOOGLE_DRIVE_FOLDER_ID
+                    )
+                    renamed = rename_file_in_drive(
+                        drive_service,
+                        old_filename,
+                        enriched_filename,
+                        month_folder_id,
+                    )
                 else:
-                    if USE_GOOGLE_DRIVE:
-                        renamed = rename_file_in_drive(
-                            drive_service,
-                            old_filename,
-                            enriched_filename,
-                            period_folder_id,
-                        )
-                    else:
-                        old_file_path = os.path.join(local_output_dir, old_filename)
-                        new_file_path = os.path.join(
-                            local_output_dir, enriched_filename
-                        )
-                        renamed = rename_file_local(old_file_path, new_file_path)
+                    month_dir = os.path.join("receipts_sync", month_folder)
+                    old_file_path = os.path.join(month_dir, old_filename)
+                    new_file_path = os.path.join(month_dir, enriched_filename)
+                    renamed = rename_file_local(old_file_path, new_file_path)
 
                 if renamed:
                     print(f"File renamed: '{old_filename}' → " f"'{enriched_filename}'")
