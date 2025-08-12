@@ -34,7 +34,7 @@ SCOPES = ["https://www.googleapis.com/auth/drive"]
 
 if not all([LOGIN, SECRET, BANK_ACCOUNT_ID]):
     raise SystemExit(
-        "Il faut définir QONTO_LOGIN, QONTO_SECRET et QONTO_BANK_ACCOUNT_ID"
+        "QONTO_LOGIN, QONTO_SECRET and QONTO_BANK_ACCOUNT_ID must be defined"
     )
 
 # Check if Google Drive is configured and available
@@ -43,52 +43,47 @@ USE_GOOGLE_DRIVE = GOOGLE_DRIVE_AVAILABLE and all(
 )
 
 if USE_GOOGLE_DRIVE:
-    print("Mode Google Drive activé")
+    print("Google Drive mode enabled")
 elif not GOOGLE_DRIVE_AVAILABLE:
-    print("Mode local activé (bibliothèques Google Drive non installées)")
+    print("Local mode enabled (Google Drive libraries not installed)")
 else:
-    print("Mode local activé (Google Drive non configuré)")
+    print("Local mode enabled (Google Drive not configured)")
 
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        description=(
-            "Télécharge tous les justificatifs d'une période donnée "
-            "depuis l'API Qonto"
-        )
+        description=("Download all receipts from a given period " "using the Qonto API")
     )
-    parser.add_argument("--year", "-y", type=int, help="Année (ex : 2025)")
+    parser.add_argument("--year", "-y", type=int, help="Year (e.g.: 2025)")
     parser.add_argument(
         "--month",
         "-m",
         type=int,
         choices=range(1, 13),
-        help="Mois (1-12, ex : 6 pour juin)",
+        help="Month (1-12, e.g.: 6 for June)",
     )
     parser.add_argument(
         "--days",
         "-d",
         type=int,
-        help="Synchroniser les N derniers jours (ex : 90 pour 3 mois)",
+        help="Sync last N days (e.g.: 90 for 3 months)",
     )
     args = parser.parse_args()
 
-    # Vérifier les combinaisons d'arguments
+    # Check argument combinations
     if args.days and (args.year or args.month):
-        parser.error("Utilisez soit --days, soit --year/--month, pas les deux.")
+        parser.error("Use either --days or --year/--month, not both.")
     elif bool(args.year) ^ bool(args.month):
-        parser.error(
-            "Il faut spécifier à la fois --year et --month, " "ou ni l'un ni l'autre."
-        )
+        parser.error("You must specify both --year and --month, " "or neither.")
     return args
 
 
-# CALCUL DE LA PÉRIODE
+# PERIOD CALCULATION
 def compute_period(year_arg, month_arg, days_arg):
     today = date.today()
 
     if days_arg:
-        # Mode "derniers N jours"
+        # "Last N days" mode
         end_date = today
         start_date = today - timedelta(days=days_arg)
         settled_from = start_date.isoformat() + "T00:00:00.000Z"
@@ -96,7 +91,7 @@ def compute_period(year_arg, month_arg, days_arg):
         period_name = f"last_{days_arg}_days"
         return None, None, settled_from, settled_to, period_name
     elif year_arg and month_arg:
-        # Mode mois spécifique
+        # Specific month mode
         year, month = year_arg, month_arg
         first_day = date(year, month, 1)
         last_day = date(year, month, calendar.monthrange(year, month)[1])
@@ -105,7 +100,7 @@ def compute_period(year_arg, month_arg, days_arg):
         period_name = f"receipts_{year}_{month:02d}"
         return year, month, settled_from, settled_to, period_name
     else:
-        # Mode mois précédent par défaut
+        # Previous month mode by default
         first_day_cur = today.replace(day=1)
         last_prev = first_day_cur - timedelta(days=1)
         year, month = last_prev.year, last_prev.month
@@ -222,12 +217,12 @@ def get_or_create_folder(service, folder_name, parent_folder_id):
         service.files().get(fileId=parent_folder_id, supportsAllDrives=True).execute()
     except Exception as e:
         raise SystemExit(
-            f"Erreur: Le dossier parent Google Drive '{parent_folder_id}' "
-            f"n'existe pas ou n'est pas accessible. Vérifiez:\n"
-            f"1. Que l'ID du dossier est correct\n"
-            f"2. Que le service account a accès au Shared Drive\n"
-            f"3. Que le dossier n'a pas été supprimé\n"
-            f"Détails: {e}"
+            f"Error: Google Drive parent folder '{parent_folder_id}' "
+            f"does not exist or is not accessible. Check:\n"
+            f"1. That the folder ID is correct\n"
+            f"2. That the service account has access to the Shared Drive\n"
+            f"3. That the folder has not been deleted\n"
+            f"Details: {e}"
         )
 
     try:
@@ -265,9 +260,7 @@ def get_or_create_folder(service, folder_name, parent_folder_id):
         )
         return folder.get("id")
     except Exception as e:
-        raise SystemExit(
-            f"Erreur lors de la création/récupération du dossier '{folder_name}': {e}"
-        )
+        raise SystemExit(f"Error creating/retrieving folder '{folder_name}': {e}")
 
 
 def file_exists_in_drive(service, file_name, folder_id):
@@ -321,8 +314,8 @@ def upload_file_to_drive(service, file_data, file_name, folder_id):
         )
         files = results.get("files", [])
     except Exception as e:
-        print(f"⚠️  Erreur lors de la recherche du fichier '{file_name}': {e}")
-        print("   Création forcée du fichier...")
+        print(f"⚠️  Error searching for file '{file_name}': {e}")
+        print("   Forcing file creation...")
         files = []  # Force creation
 
     mimetype = get_mimetype(file_name)
@@ -345,7 +338,7 @@ def upload_file_to_drive(service, file_data, file_name, folder_id):
                 supportsAllDrives=True,
             ).execute()
     except Exception as e:
-        print(f"❌ Erreur lors de l'upload du fichier '{file_name}': {e}")
+        print(f"❌ Error uploading file '{file_name}': {e}")
         raise
 
 
@@ -398,7 +391,7 @@ def save_download_state_local(state_file_path, state):
         with open(state_file_path, "w") as f:
             json.dump(state, f, indent=2)
     except IOError as e:
-        print(f"Erreur lors de la sauvegarde de l'état: {e}")
+        print(f"Error saving state: {e}")
 
 
 def upload_file_local(file_data, file_path):
@@ -428,7 +421,7 @@ def save_download_state(service, folder_id, state):
             service, state_json.encode("utf-8"), ".download_state.json", folder_id
         )
     except Exception as e:
-        print(f"Erreur lors de la sauvegarde de l'état: {e}")
+        print(f"Error saving state: {e}")
 
 
 def should_download_attachment(att, state):
@@ -505,7 +498,7 @@ def rename_file_in_drive(service, old_filename, new_filename, folder_id):
             return True
         return False
     except Exception as e:
-        print(f"⚠️  Erreur lors du renommage '{old_filename}' → '{new_filename}': {e}")
+        print(f"⚠️  Error renaming '{old_filename}' → '{new_filename}': {e}")
         return False
 
 
@@ -534,7 +527,7 @@ def main():
     year, month, settled_from, settled_to, period_name = compute_period(
         args.year, args.month, args.days
     )
-    print(f"Période ciblée : {settled_from} → {settled_to}")
+    print(f"Target period: {settled_from} → {settled_to}")
 
     # Setup storage (Google Drive or local)
     if USE_GOOGLE_DRIVE:
@@ -542,11 +535,11 @@ def main():
         drive_service = get_drive_service()
         # Create or get the period folder in Google Drive (only for monthly mode)
         if args.days:
-            # Mode "derniers jours" : pas de sous-dossier, tout dans le dossier parent
+            # "Last days" mode: no subfolder, everything in parent folder
             period_folder_id = GOOGLE_DRIVE_FOLDER_ID
-            storage_location = f"Google Drive root folder (derniers {args.days} jours)"
+            storage_location = f"Google Drive root folder (last {args.days} days)"
         else:
-            # Mode mensuel : créer un sous-dossier
+            # Monthly mode: create subfolder
             period_folder_id = get_or_create_folder(
                 drive_service, period_name, GOOGLE_DRIVE_FOLDER_ID
             )
@@ -555,11 +548,11 @@ def main():
         # Use local storage
         drive_service = None
         if args.days:
-            # Mode "derniers jours" : dossier unique
+            # "Last days" mode: single folder
             local_output_dir = "receipts_sync"
             period_folder_id = None
         else:
-            # Mode mensuel : dossier par mois
+            # Monthly mode: folder per month
             local_output_dir = period_name
             period_folder_id = None
         os.makedirs(local_output_dir, exist_ok=True)
@@ -568,11 +561,11 @@ def main():
     headers = {"Authorization": f"{LOGIN}:{SECRET}"}
 
     # Récupérer le cache des labels
-    print("Chargement des labels...")
+    print("Loading labels...")
     labels_cache = get_labels_cache(headers)
-    print(f"Labels chargés : {len(labels_cache)} labels trouvés")
+    print(f"Labels loaded: {len(labels_cache)} labels found")
 
-    # Récupérer les transactions avec justificatifs
+    # Fetch transactions with attachments
     transactions = []
     page, per_page = 1, 100
     while True:
@@ -593,18 +586,18 @@ def main():
             break
         page += 1
 
-    print(f"Transactions trouvées avec justificatifs : {len(transactions)}")
+    print(f"Transactions found with attachments: {len(transactions)}")
 
-    # Charger l'état des téléchargements précédents
+    # Load previous download state
     if USE_GOOGLE_DRIVE:
-        # En mode "derniers jours", le state est à la racine du dossier parent
+        # In "last days" mode, state is at the root of parent folder
         state_folder_id = period_folder_id
         download_state = load_download_state(drive_service, state_folder_id)
     else:
         state_file_path = os.path.join(local_output_dir, ".download_state.json")
         download_state = load_download_state_local(state_file_path)
 
-    # Télécharger chaque justificatif
+    # Download each attachment
     downloaded_count = 0
     skipped_count = 0
 
@@ -625,17 +618,17 @@ def main():
 
             if should_download_attachment(att, download_state):
                 print(
-                    f"Téléchargement de « {original_filename} » → "
-                    f"« {enriched_filename} » pour la transaction {tx_id}…"
+                    f"Downloading '{original_filename}' → "
+                    f"'{enriched_filename}' for transaction {tx_id}..."
                 )
                 file_data = requests.get(url).content
 
-                # Déterminer le dossier de destination par mois
+                # Determine destination folder by month
                 if args.days:
-                    # Mode "derniers jours" : organiser par mois
+                    # "Last days" mode: organize by month
                     month_folder = get_month_folder_name(tx.get("settled_at", ""))
                     if USE_GOOGLE_DRIVE:
-                        # Créer le dossier du mois dans Google Drive
+                        # Create month folder in Google Drive
                         month_folder_id = get_or_create_folder(
                             drive_service, month_folder, GOOGLE_DRIVE_FOLDER_ID
                         )
@@ -643,13 +636,13 @@ def main():
                             drive_service, file_data, enriched_filename, month_folder_id
                         )
                     else:
-                        # Créer le dossier du mois en local
+                        # Create month folder locally
                         month_dir = os.path.join("receipts_sync", month_folder)
                         os.makedirs(month_dir, exist_ok=True)
                         file_path = os.path.join(month_dir, enriched_filename)
                         upload_file_local(file_data, file_path)
                 else:
-                    # Mode mensuel : utiliser le dossier de la période
+                    # Monthly mode: use period folder
                     if USE_GOOGLE_DRIVE:
                         upload_file_to_drive(
                             drive_service,
@@ -667,7 +660,7 @@ def main():
                 stored = download_state[att["id"]]
                 old_filename = stored.get("enriched_file_name", "")
 
-                # Déterminer le dossier pour le renommage
+                # Determine folder for renaming
                 if args.days:
                     month_folder = get_month_folder_name(tx.get("settled_at", ""))
                     if USE_GOOGLE_DRIVE:
@@ -701,33 +694,24 @@ def main():
                         renamed = rename_file_local(old_file_path, new_file_path)
 
                 if renamed:
-                    print(
-                        f"Fichier renommé : « {old_filename} » → "
-                        f"« {enriched_filename} »"
-                    )
+                    print(f"File renamed: '{old_filename}' → " f"'{enriched_filename}'")
                     update_attachment_state(att, enriched_filename, download_state)
                     downloaded_count += 1  # Count as updated file
                 else:
-                    print(
-                        f"Fichier « {old_filename} » non trouvé pour "
-                        f"renommage, ignoré."
-                    )
+                    print(f"File '{old_filename}' not found for " f"renaming, skipped.")
                     skipped_count += 1
             else:
-                print(f"Fichier « {enriched_filename} » déjà téléchargé, ignoré.")
+                print(f"File '{enriched_filename}' already downloaded, skipped.")
                 skipped_count += 1
 
-    # Sauvegarder l'état après tous les téléchargements
+    # Save state after all downloads
     if USE_GOOGLE_DRIVE:
         save_download_state(drive_service, state_folder_id, download_state)
     else:
         save_download_state_local(state_file_path, download_state)
 
-    print(f"Téléchargements terminés dans {storage_location}")
-    print(
-        f"Fichiers téléchargés: {downloaded_count}, "
-        f"fichiers ignorés: {skipped_count}"
-    )
+    print(f"Downloads completed in {storage_location}")
+    print(f"Files downloaded: {downloaded_count}, " f"files skipped: {skipped_count}")
 
 
 if __name__ == "__main__":
