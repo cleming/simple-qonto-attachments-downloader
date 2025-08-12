@@ -33,7 +33,6 @@ service-account.json
 Thumbs.db
 
 docker-compose.override.yml
-Dockerfile*
 
 output/
 
