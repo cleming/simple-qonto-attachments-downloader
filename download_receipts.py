@@ -437,6 +437,18 @@ def should_download_attachment(att, state):
         return True
 
     stored = state[att_id]
+
+    # For Qonto invoices, always re-download if the filename suggests content changed
+    original_filename = att.get("file_name", "")
+    if "invoice-" in original_filename:
+        # Check if any key metadata changed (size, creation date, or filename)
+        return (
+            stored.get("file_size") != att.get("file_size")
+            or stored.get("created_at") != att.get("created_at")
+            or stored.get("original_file_name") != original_filename
+        )
+
+    # For other files, use the original logic
     return stored.get("file_size") != att.get("file_size") or stored.get(
         "created_at"
     ) != att.get("created_at")
@@ -450,6 +462,11 @@ def should_rename_file(att, enriched_filename, state):
 
     stored = state[att_id]
     stored_filename = stored.get("enriched_file_name", "")
+
+    # Don't rename Qonto invoices as they are updated over time
+    original_filename = att.get("file_name", "")
+    if "invoice-" in original_filename and "Qonto" in enriched_filename:
+        return False
 
     # File content hasn't changed but filename is different
     return (
