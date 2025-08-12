@@ -24,6 +24,7 @@ ENV/
 .venv/
 
 .env
+service-account.json
 
 *.log
 *.sqlite3
