@@ -32,6 +32,11 @@ GOOGLE_CREDENTIALS_PATH = os.getenv("GOOGLE_CREDENTIALS_PATH")
 GOOGLE_DRIVE_FOLDER_ID = os.getenv("GOOGLE_DRIVE_FOLDER_ID")
 SCOPES = ["https://www.googleapis.com/auth/drive"]
 
+# Slack configuration
+SLACK_WEBHOOK_URL_ENV = os.getenv("SLACK_WEBHOOK_URL")
+SLACK_MAX_LINES = int(os.getenv("SLACK_MAX_LINES", "30"))
+SLACK_DEBUG = os.getenv("SLACK_DEBUG", "0") in ("1", "true", "True", "yes", "on")
+
 if not all([LOGIN, SECRET, BANK_ACCOUNT_ID]):
     raise SystemExit(
         "QONTO_LOGIN, QONTO_SECRET and QONTO_BANK_ACCOUNT_ID must be defined"
@@ -67,6 +72,20 @@ def parse_args():
         "-d",
         type=int,
         help="Sync last N days (e.g.: 90 for 3 months)",
+    )
+    parser.add_argument(
+        "--slack",
+        action="store_true",
+        help=(
+            "Post a single Slack message when new invoices are added. "
+            "Uses SLACK_WEBHOOK_URL unless --slack-webhook-url is provided."
+        ),
+    )
+    parser.add_argument(
+        "--slack-webhook-url",
+        type=str,
+        default=None,
+        help="Slack Incoming Webhook URL (overrides SLACK_WEBHOOK_URL)",
     )
     args = parser.parse_args()
 
@@ -292,6 +311,97 @@ def get_mimetype(file_name):
         "xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     }
     return mime_types.get(extension, "application/octet-stream")
+
+
+# Slack helpers
+def _format_amount_eur(amount):
+    try:
+        if amount == int(amount):
+            return f"{int(amount)}€"
+        return f"{amount:.2f}€"
+    except Exception:
+        return f"{amount}€"
+
+
+def post_to_slack(webhook_url, payload, fallback_text=None):
+    try:
+        if SLACK_DEBUG:
+            print("[Slack] Payload preview:")
+            try:
+                print(json.dumps(payload, ensure_ascii=False)[:2000])
+            except Exception:
+                pass
+        resp = requests.post(webhook_url, json=payload, timeout=10)
+        if resp.status_code == 200:
+            return True
+        # Log server message for better diagnosis
+        print(f"⚠️  Slack responded {resp.status_code}: {resp.text}")
+        # Fallback to plain text if provided and first attempt failed
+        if fallback_text:
+            fallback_payload = {"text": fallback_text}
+            resp2 = requests.post(webhook_url, json=fallback_payload, timeout=10)
+            if resp2.status_code == 200:
+                print("Slack fallback (plain text) sent.")
+                return True
+            print(f"⚠️  Slack fallback failed {resp2.status_code}: {resp2.text}")
+        return False
+    except Exception as e:
+        print(f"⚠️  Slack notification failed: {e}")
+        return False
+
+
+def build_slack_payload(new_items, period_label, drive_links=None):
+    count = len(new_items)
+    text = f"{count} nouvelles factures ajoutées {period_label}."
+
+    # Build item lines with truncation to avoid Slack limits
+    lines = []
+    for item in new_items[:SLACK_MAX_LINES]:
+        parts = []
+        if item.get("date_str"):
+            parts.append(item["date_str"])
+        if item.get("author"):
+            parts.append(item["author"])
+        if item.get("amount") is not None:
+            parts.append(_format_amount_eur(item["amount"]))
+        summary = " · ".join(parts) if parts else item.get("filename", "(sans nom)")
+        filename = item.get("filename", "")
+        lines.append(f"• {summary} — {filename}")
+
+    remaining = count - len(lines)
+    if remaining > 0:
+        lines.append(f"… et {remaining} autres")
+
+    blocks = [
+        {
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": f"*{count} nouvelles factures* ajoutées {period_label}",
+            },
+        },
+    ]
+
+    if lines:
+        blocks.append(
+            {
+                "type": "section",
+                "text": {"type": "mrkdwn", "text": "\n".join(lines)},
+            }
+        )
+
+    if drive_links:
+        # If multiple links, show them all; otherwise single link
+        if isinstance(drive_links, dict):
+            links_lines = [
+                f"• <{url}|{month}>" for month, url in sorted(drive_links.items())
+            ]
+            links_text = "Dossiers Drive: " + " ".join(links_lines)
+        else:
+            links_text = f"Dossier Drive: <{drive_links}|ouvrir>"
+        blocks.append({"type": "context", "elements": [{"type": "mrkdwn", "text": links_text}]})
+
+    return {"text": text, "blocks": blocks}
 
 
 def upload_file_to_drive(service, file_data, file_name, folder_id):
@@ -593,6 +703,8 @@ def main():
     # Download each attachment
     downloaded_count = 0
     skipped_count = 0
+    new_items = []  # For Slack summary
+    drive_month_folders = {}  # month -> folder_id (Drive only)
 
     for tx in transactions:
         tx_id = tx["id"]
@@ -623,6 +735,7 @@ def main():
                     month_folder_id = get_or_create_folder(
                         drive_service, month_folder, GOOGLE_DRIVE_FOLDER_ID
                     )
+                    drive_month_folders[month_folder] = month_folder_id
                     upload_file_to_drive(
                         drive_service, file_data, enriched_filename, month_folder_id
                     )
@@ -634,6 +747,28 @@ def main():
                     upload_file_local(file_data, file_path)
                 update_attachment_state(att, enriched_filename, download_state)
                 downloaded_count += 1
+                # Track for Slack
+                try:
+                    # Prepare human date
+                    settled_at = tx.get("settled_at", "")
+                    date_obj = (
+                        datetime.fromisoformat(settled_at.replace("Z", "+00:00"))
+                        if settled_at
+                        else None
+                    )
+                    date_str = date_obj.strftime("%Y-%m-%d") if date_obj else None
+                except Exception:
+                    date_str = None
+                new_items.append(
+                    {
+                        "filename": enriched_filename,
+                        "amount": tx.get("amount"),
+                        "author": tx.get("clean_counterparty_name")
+                        or tx.get("label", "Unknown"),
+                        "date_str": date_str,
+                        "month": month_folder,
+                    }
+                )
             elif should_rename_file(att, enriched_filename, download_state):
                 # File exists but needs renaming due to label changes
                 stored = download_state[att["id"]]
@@ -676,6 +811,65 @@ def main():
 
     print(f"Downloads completed in {storage_location}")
     print(f"Files downloaded: {downloaded_count}, " f"files skipped: {skipped_count}")
+
+    # Optional Slack notification
+    if args.slack:
+        webhook_url = args.slack_webhook_url or SLACK_WEBHOOK_URL_ENV
+        if not webhook_url:
+            print(
+                "⚠️  --slack enabled but no webhook URL provided. "
+                "Set SLACK_WEBHOOK_URL or pass --slack-webhook-url."
+            )
+        elif new_items:
+            if USE_GOOGLE_DRIVE:
+                # If a single month, link that folder; else show each
+                months = sorted(set(item["month"] for item in new_items if item.get("month")))
+                if len(months) == 1 and months[0] in drive_month_folders:
+                    drive_links = f"https://drive.google.com/drive/folders/{drive_month_folders[months[0]]}"
+                else:
+                    # Map month -> link when known; fallback to parent folder link
+                    links = {}
+                    for m in months:
+                        if m in drive_month_folders:
+                            links[m] = f"https://drive.google.com/drive/folders/{drive_month_folders[m]}"
+                    if not links:
+                        links = f"https://drive.google.com/drive/folders/{GOOGLE_DRIVE_FOLDER_ID}"
+                    drive_links = links
+            else:
+                drive_links = None
+
+            # Build a human label for period
+            if args.days:
+                period_label = f"(sur les {args.days} derniers jours)"
+            elif year and month:
+                period_label = f"pour {year}-{month:02d}"
+            else:
+                period_label = "pour la période demandée"
+
+            payload = build_slack_payload(new_items, period_label, drive_links)
+            # Build a concise plain-text fallback
+            try:
+                first_lines = []
+                for it in new_items[:SLACK_MAX_LINES]:
+                    bits = []
+                    if it.get("date_str"):
+                        bits.append(it["date_str"])
+                    if it.get("author"):
+                        bits.append(it["author"])
+                    if it.get("amount") is not None:
+                        bits.append(_format_amount_eur(it["amount"]))
+                    first_lines.append(" - " + " | ".join(bits))
+                rem = len(new_items) - len(first_lines)
+                if rem > 0:
+                    first_lines.append(f" ... (+{rem} autres)")
+                plain = (
+                    f"{len(new_items)} nouvelles factures {period_label}.\n" + "\n".join(first_lines)
+                )
+            except Exception:
+                plain = f"{len(new_items)} nouvelles factures {period_label}."
+            ok = post_to_slack(webhook_url, payload, fallback_text=plain)
+            if ok:
+                print("Slack notification sent.")
 
 
 if __name__ == "__main__":

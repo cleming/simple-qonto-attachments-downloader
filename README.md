@@ -97,6 +97,12 @@ python3 download_receipts.py
 
 # Download receipts for a specific month
 python3 download_receipts.py --year 2025 --month 7
+
+# Post a Slack summary if new invoices were added (uses SLACK_WEBHOOK_URL)
+python3 download_receipts.py --year 2025 --month 7 --slack
+
+# Or pass the webhook explicitly
+python3 download_receipts.py --year 2025 --month 7 --slack --slack-webhook-url https://hooks.slack.com/services/XXX/YYY/ZZZ
 ```
 
 ## State System Operation
@@ -137,3 +143,16 @@ This script is designed to work perfectly in AWS Lambda:
 4. Set up CloudWatch Events for scheduled runs
 
 The stateless nature of Lambda is handled by storing all state in Google Drive.
+
+## Slack Notifications (Optional)
+
+- Set `SLACK_WEBHOOK_URL` in your environment or `.env` file.
+- Run with `--slack` to send one message when new invoices are added.
+- The message summarizes newly added files (date, merchant, amount) and, in Google Drive mode, includes a link to the relevant folder(s).
+
+### Troubleshooting 400 Bad Request
+
+- Ensure the webhook URL is correct and active for your Slack workspace.
+- Some Slack apps have stricter payload rules; this script sends Block Kit with a `text` fallback. On 400 responses, it automatically retries with a plain-text fallback.
+- Very long summaries can exceed Slack limits; the script truncates to `SLACK_MAX_LINES` (default 30). You can adjust via env var.
+- Enable debug to inspect payload: set `SLACK_DEBUG=1` to print a preview in the console.
